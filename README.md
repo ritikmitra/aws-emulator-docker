@@ -1,6 +1,6 @@
 # aws-emulator-docker
 
-[![Build and test](https://github.com/ritikmitra/aws-emulator-docker/actions/workflows/build.yml/badge.svg)](https://github.com/ritikmitra/aws-emulator-docker/actions/workflows/build.yml)
+[![Build, test and publish](https://github.com/ritikmitra/aws-emulator-docker/actions/workflows/build.yml/badge.svg)](https://github.com/ritikmitra/aws-emulator-docker/actions/workflows/build.yml)
 
 Community-built Docker images for [AWS Emulator](https://github.com/aws/aws-emulator): pinned to a specific version, verified against AWS's package-signing key, and built for both ARM64 and AMD64 from one Dockerfile.
 
@@ -17,7 +17,8 @@ AWS doesn't publish a prebuilt container image for AWS Emulator. On macOS and Wi
 | Package signature | Not checked | Verified with GnuPG; the build fails if it's bad |
 | Signing key | Not checked | Fingerprint pinned; the build fails if it changes |
 | ARM64 and AMD64 | Edit the file by hand | Picked automatically |
-| Prebuilt image | No, every user builds it | Planned (see [Roadmap](#roadmap)) |
+| Prebuilt image | No, every user builds it | Yes, on GitHub Container Registry |
+| Tested before release | No | Smoke-tested on real AMD64 and ARM64 machines |
 
 ## Supported platforms
 
@@ -26,7 +27,7 @@ AWS doesn't publish a prebuilt container image for AWS Emulator. On macOS and Wi
 | ARM64 (`aarch64`) | Apple silicon Macs, AWS Graviton, other Arm servers |
 | AMD64 (`x86_64`) | Intel and AMD PCs, most CI runners |
 
-The same Dockerfile builds both, and Docker picks the right one for your machine automatically. Prebuilt images are on the [roadmap](#roadmap); for now, you build the image yourself with one command.
+Each tag covers both architectures. Docker pulls the right one for your machine automatically.
 
 ## Quick start
 
@@ -35,15 +36,13 @@ The same Dockerfile builds both, and Docker picks the right one for your machine
 - Docker (Docker Desktop on macOS and Windows)
 - AWS CLI version 2, for the examples below
 
-### 1. Build the image
+### 1. Pull the image
 
 ```bash
-git clone https://github.com/ritikmitra/aws-emulator-docker.git
-cd aws-emulator-docker
-docker build -t aws-emulator-local -f docker/Dockerfile docker/
+docker pull ghcr.io/YOUR_USERNAME/aws-emulator:latest
 ```
 
-Docker picks the right architecture for your machine automatically.
+For repeatable tests, pin a version instead of `latest`, for example `ghcr.io/YOUR_USERNAME/aws-emulator:1.0.322.1`. See [Image tags](#image-tags).
 
 ### 2. Start the emulator
 
@@ -57,7 +56,7 @@ mkdir -p ~/.aws/emulator
 docker run --rm --memory=2g --memory-swap=2g \
   -p 127.0.0.1:9297:9297 \
   -e HOME="$HOME" -v "$HOME/.aws/emulator:$HOME/.aws/emulator" \
-  aws-emulator-local -p 9297
+  ghcr.io/YOUR_USERNAME/aws-emulator:latest -p 9297
 ```
 
 On Linux, also add `--user "$(id -u):$(id -g)"` after `docker run` so the files the emulator creates belong to you.
@@ -69,7 +68,7 @@ New-Item -ItemType Directory -Force "$env:USERPROFILE\.aws\emulator"
 
 docker run --rm --memory=2g --memory-swap=2g -p "127.0.0.1:9297:9297" `
   -v "$env:USERPROFILE\.aws\emulator:/home/emulator/.aws/emulator" `
-  aws-emulator-local -p 9297
+  ghcr.io/YOUR_USERNAME/aws-emulator:latest -p 9297
 ```
 
 > [!WARNING]
@@ -128,7 +127,35 @@ By default, AWS Emulator sends anonymous usage and error data to AWS. According 
 
 To turn telemetry off, either add `--telemetry off` at the end of the `docker run` command, or pass `-e EMULATOR_TELEMETRY=off` to `docker run`. Setting `EMULATOR_TELEMETRY` in your own shell doesn't reach the container.
 
-## Building a specific version
+## Image tags
+
+| Tag | Meaning |
+|---|---|
+| `1.0.322.1` | A specific AWS Emulator version, for both architectures. Never overwritten once published. |
+| `latest` | The newest published version. Moves when a new version is released. |
+| `1.0.322.1-amd64`, `1.0.322.1-arm64` | Single-architecture images, used to build the tags above. You normally don't need these. |
+
+Version tags use the same format as AWS's `versions.json`. Each image is labeled with the commit that built it, so you can trace it back to this repository:
+
+```bash
+docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' ghcr.io/YOUR_USERNAME/aws-emulator:1.0.322.1
+```
+
+## Building the image yourself
+
+```bash
+git clone https://github.com/YOUR_USERNAME/aws-emulator-docker.git
+cd aws-emulator-docker
+docker build -t aws-emulator-local -f docker/Dockerfile docker/
+```
+
+To run the same smoke test that CI runs:
+
+```bash
+tests/smoke-test.sh aws-emulator-local
+```
+
+### Building a specific version
 
 AWS lists the published versions in [`versions.json`](https://downloads.aws.com/aws-emulator/packages/aws-emulator/LTS/versions.json). An entry such as `1.0.322.1` splits into `VERSION=1.0.322` and `RELEASE=1`:
 
@@ -175,9 +202,11 @@ Every step must succeed, or the build stops:
 - [x] Pinned, signature-verified image
 - [x] Signing-key fingerprint pinning
 - [x] One Dockerfile for ARM64 and AMD64
-- [ ] Automated smoke tests (S3, DynamoDB)
-- [ ] GitHub Actions builds for both architectures
-- [ ] Multi-architecture images published to GitHub Container Registry
+- [x] Automated smoke test (S3)
+- [x] GitHub Actions builds and tests on real AMD64 and ARM64 machines
+- [x] Multi-architecture images published to GitHub Container Registry
+- [x] Immutable version tags
+- [ ] DynamoDB smoke test
 - [ ] Daily detection of new AWS Emulator releases
 - [ ] Docker Compose example
 
