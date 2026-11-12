@@ -1,0 +1,47 @@
+# Builds the image and runs the smoke test on real AMD64 and ARM64 machines.
+
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:   # adds a "Run workflow" button on the Actions tab
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04       # x86 machine
+          - arch: arm64
+            runner: ubuntu-24.04-arm   # ARM machine 
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Make sure the AWS CLI is installed
+        run: |
+          if command -v aws >/dev/null 2>&1; then
+            aws --version
+          else
+            # $(uname -m) is x86_64 or aarch64, which matches AWS's installer file names
+            curl -fsSLo awscliv2.zip "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip"
+            unzip -q awscliv2.zip
+            sudo ./aws/install
+            aws --version
+          fi
+
+      - name: Build the image
+        run: docker build -t aws-emulator-local -f docker/Dockerfile docker/
+
+      - name: Run the smoke test
+        run: tests/smoke-test.sh aws-emulator-local
