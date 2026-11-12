@@ -1,0 +1,15 @@
+# macOS folder metadata
+.DS_STORE
+
+# Packages, signatures and keys downloaded while testing by hand
+*.rpm
+*.deb
+*.sig
+*.asc
+*.gpg
+
+# Files created by manual smoke tests
+hello.txt
+
+# Local environment settings (may contain credentials)
+.env
