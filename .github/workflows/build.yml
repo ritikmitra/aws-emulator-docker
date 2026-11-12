@@ -1,6 +1,9 @@
-# Builds the image and runs the smoke test on real AMD64 and ARM64 machines.
+# Builds the image on real AMD64 and ARM64 machines, runs the smoke test on each,
+# and, on the main branch only, publishes a multi-architecture image to GHCR.
+#
+# Version tags are immutable: if a version is already published, it's never pushed again.
 
-name: Build and test
+name: Build, test and publish
 
 on:
   push:
@@ -8,13 +11,85 @@ on:
   pull_request:
   workflow_dispatch:   # adds a "Run workflow" button on the Actions tab
 
+# Default for every job: read-only. Jobs that push images ask for more below.
 permissions:
   contents: read
 
+env:
+  IMAGE_NAME: aws-emulator
+
 jobs:
+  # 1. Work out the version and image name, and decide whether to publish.
+  prepare:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read   # to check whether a version is already published
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      emulator_version: ${{ steps.meta.outputs.emulator_version }}
+      image: ${{ steps.meta.outputs.image }}
+      publish: ${{ steps.meta.outputs.publish }}
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Read the version and decide whether to publish
+        id: meta
+        run: |
+          # The Dockerfile is the single source of truth for the version.
+          VERSION=$(sed -n 's/^ARG VERSION=//p' docker/Dockerfile)
+          RELEASE=$(sed -n 's/^ARG RELEASE=//p' docker/Dockerfile)
+          if [ -z "$VERSION" ] || [ -z "$RELEASE" ]; then
+            echo "ERROR: couldn't read VERSION and RELEASE from docker/Dockerfile" >&2
+            exit 1
+          fi
+
+          # GHCR image names must be lowercase; ${VAR,,} lowercases in bash.
+          OWNER="${GITHUB_REPOSITORY_OWNER,,}"
+          IMAGE="ghcr.io/${OWNER}/${IMAGE_NAME}"
+          TAG="${VERSION}.${RELEASE}"   # same format as versions.json, e.g. 1.0.322.1
+
+          PUBLISH=false
+          if [ "$GITHUB_EVENT_NAME" != "pull_request" ] && [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            if OUTPUT=$(docker manifest inspect "$IMAGE:$TAG" 2>&1); then
+              echo "$IMAGE:$TAG is already published. Version tags are never overwritten, so nothing will be pushed."
+            elif echo "$OUTPUT" | grep -qiE 'manifest unknown|not found'; then
+              echo "$IMAGE:$TAG isn't published yet. It will be published if all tests pass."
+              PUBLISH=true
+            else
+              # Any other error (network, auth): stop rather than risk overwriting a tag.
+              echo "ERROR: couldn't check whether $IMAGE:$TAG exists:" >&2
+              echo "$OUTPUT" >&2
+              exit 1
+            fi
+          else
+            echo "Not on main: build and test only."
+          fi
+
+          {
+            echo "tag=$TAG"
+            echo "emulator_version=$VERSION"
+            echo "image=$IMAGE"
+            echo "publish=$PUBLISH"
+          } >> "$GITHUB_OUTPUT"
+
+  # 2. Build and test on each architecture, then push an architecture-specific tag.
   build-and-test:
+    needs: prepare
     name: ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -22,7 +97,12 @@ jobs:
           - arch: amd64
             runner: ubuntu-24.04       # x86 machine
           - arch: arm64
-            runner: ubuntu-24.04-arm   # ARM machine 
+            runner: ubuntu-24.04-arm   # ARM machine
+    env:
+      IMAGE: ${{ needs.prepare.outputs.image }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      EMULATOR_VERSION: ${{ needs.prepare.outputs.emulator_version }}
+      ARCH: ${{ matrix.arch }}
 
     steps:
       - name: Check out the repository
@@ -33,7 +113,6 @@ jobs:
           if command -v aws >/dev/null 2>&1; then
             aws --version
           else
-            # $(uname -m) is x86_64 or aarch64, which matches AWS's installer file names
             curl -fsSLo awscliv2.zip "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip"
             unzip -q awscliv2.zip
             sudo ./aws/install
@@ -41,7 +120,71 @@ jobs:
           fi
 
       - name: Build the image
-        run: docker build -t aws-emulator-local -f docker/Dockerfile docker/
+        run: |
+          # OCI labels: metadata that GHCR shows, and that links the package to this repository.
+          docker build \
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.version=${TAG}" \
+            --label "org.opencontainers.image.title=aws-emulator" \
+            --label "org.opencontainers.image.description=Community-built AWS Emulator image. Not affiliated with AWS." \
+            -t aws-emulator-local -f docker/Dockerfile docker/
+
+      - name: Check the installed emulator version
+        run: |
+          INSTALLED=$(docker run --rm aws-emulator-local -v | sed -n 's/^Version: //p')
+          echo "Dockerfile says ${EMULATOR_VERSION}, image contains ${INSTALLED}"
+          if [ "$INSTALLED" != "$EMULATOR_VERSION" ]; then
+            echo "ERROR: version mismatch" >&2
+            exit 1
+          fi
 
       - name: Run the smoke test
         run: tests/smoke-test.sh aws-emulator-local
+
+      - name: Log in to GitHub Container Registry
+        if: needs.prepare.outputs.publish == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push the ${{ matrix.arch }} image
+        if: needs.prepare.outputs.publish == 'true'
+        run: |
+          docker tag aws-emulator-local "${IMAGE}:${TAG}-${ARCH}"
+          docker push "${IMAGE}:${TAG}-${ARCH}"
+
+  # 3. After both architectures pass, combine them under one multi-architecture tag.
+  publish:
+    needs: [prepare, build-and-test]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ${{ needs.prepare.outputs.image }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Create the multi-architecture tags
+        run: |
+          docker buildx imagetools create \
+            -t "${IMAGE}:${TAG}" \
+            -t "${IMAGE}:latest" \
+            "${IMAGE}:${TAG}-amd64" \
+            "${IMAGE}:${TAG}-arm64"
+
+      - name: Show what was published
+        run: docker buildx imagetools inspect "${IMAGE}:${TAG}"
