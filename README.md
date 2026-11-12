@@ -1,5 +1,7 @@
 # aws-emulator-docker
 
+[![Build and test](https://github.com/ritikmitra/aws-emulator-docker/actions/workflows/build.yml/badge.svg)](https://github.com/ritikmitra/aws-emulator-docker/actions/workflows/build.yml)
+
 Community-built Docker images for [AWS Emulator](https://github.com/aws/aws-emulator): pinned to a specific version, verified against AWS's package-signing key, and built for both ARM64 and AMD64 from one Dockerfile.
 
 > [!IMPORTANT]
@@ -36,7 +38,7 @@ The same Dockerfile builds both, and Docker picks the right one for your machine
 ### 1. Build the image
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/aws-emulator-docker.git
+git clone https://github.com/ritikmitra/aws-emulator-docker.git
 cd aws-emulator-docker
 docker build -t aws-emulator-local -f docker/Dockerfile docker/
 ```
