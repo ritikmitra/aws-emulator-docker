@@ -19,6 +19,16 @@ env:
   IMAGE_NAME: aws-emulator
 
 jobs:
+  # Unit tests for scripts/check_version.py. Fast, and no Docker or network needed.
+  unit-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Run the Python unit tests
+        run: python3 -m unittest discover -s tests -v
+
   # 1. Work out the version and image name, and decide whether to publish.
   prepare:
     runs-on: ubuntu-24.04
@@ -162,7 +172,7 @@ jobs:
     if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      contents: write   # create the git tag and GitHub release
       packages: write
     env:
       IMAGE: ${{ needs.prepare.outputs.image }}
@@ -188,3 +198,35 @@ jobs:
 
       - name: Show what was published
         run: docker buildx imagetools inspect "${IMAGE}:${TAG}"
+
+      - name: Create the git tag and GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # If this job is re-run after a partial failure, the release may already exist.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists. Nothing to do."
+            exit 0
+          fi
+
+          DIGEST=$(docker buildx imagetools inspect "${IMAGE}:${TAG}" | awk '/^Digest:/ {print $2; exit}')
+
+          NOTES="AWS Emulator **${TAG}**, packaged as a multi-architecture image (AMD64 and ARM64), signature-verified and smoke-tested on both.
+
+          \`\`\`bash
+          docker pull ${IMAGE}:${TAG}
+          \`\`\`
+
+          - Image digest: \`${DIGEST}\`
+          - Built from commit ${GITHUB_SHA}
+          - Upstream release notes and fidelity scores: https://github.com/aws/aws-emulator/releases
+
+          This is a community-built image. It is not affiliated with or endorsed by AWS."
+
+          # --target creates the git tag on the exact commit that built the image.
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "AWS Emulator ${TAG}" \
+            --notes "$NOTES" \
+            --latest

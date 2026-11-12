@@ -1,0 +1,108 @@
+# Checks AWS's versions.json every day. If a newer AWS Emulator version exists,
+# updates VERSION and RELEASE in the Dockerfile and opens a pull request.
+# build.yml then builds and tests that version; merging the pull request publishes it.
+
+name: Check for new release
+
+on:
+    schedule:
+        - cron: "17 7 * * *" # every day at 07:17 AM IST
+          timezone: "Asia/Kolkata"
+    workflow_dispatch: # adds a "Run workflow" button on the Actions tab
+
+permissions:
+    contents: read
+
+jobs:
+    check:
+        runs-on: ubuntu-24.04
+        permissions:
+            contents: write # push the update branch
+            pull-requests: write # open the pull request and request a review
+            issues: write # create the label and set the assignee
+            actions: write # start build.yml on the new branch
+
+        steps:
+            - name: Check out the repository
+              uses: actions/checkout@v7
+
+            # If the checker's own logic is broken, don't let it touch anything.
+            - name: Run the unit tests
+              run: python3 -m unittest discover -s tests -v
+
+            - name: Check for a newer version
+              run: python3 scripts/check_version.py
+
+            - name: Decide whether to open a pull request
+              id: change
+              run: |
+                  if git diff --quiet docker/Dockerfile; then
+                    echo "The Dockerfile already has the newest version. Nothing to do."
+                    echo "updated=false" >> "$GITHUB_OUTPUT"
+                    exit 0
+                  fi
+
+                  VERSION=$(sed -n 's/^ARG VERSION=//p' docker/Dockerfile)
+                  RELEASE=$(sed -n 's/^ARG RELEASE=//p' docker/Dockerfile)
+                  NEW_VERSION="${VERSION}.${RELEASE}"
+                  BRANCH="release/aws-emulator-${NEW_VERSION}"
+
+                  # One branch per version: if it already exists, a pull request for this
+                  # version was already opened (and is still open, or was closed on purpose).
+                  if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null; then
+                    echo "Branch $BRANCH already exists. Not opening another pull request for $NEW_VERSION."
+                    echo "updated=false" >> "$GITHUB_OUTPUT"
+                    exit 0
+                  fi
+
+                  echo "New version $NEW_VERSION found."
+                  {
+                    echo "updated=true"
+                    echo "version=$NEW_VERSION"
+                    echo "branch=$BRANCH"
+                  } >> "$GITHUB_OUTPUT"
+
+            - name: Open a pull request and start the build
+              if: steps.change.outputs.updated == 'true'
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  NEW_VERSION: ${{ steps.change.outputs.version }}
+                  BRANCH: ${{ steps.change.outputs.branch }}
+                  # Who reviews and owns release pull requests. For a personal repository,
+                  # the owner is you. For an organization, replace this with a username.
+                  MAINTAINER: ${{ github.repository_owner }}
+                  LABEL: aws-emulator-update
+              run: |
+                  # Create the label, or update it if it already exists (--force), so this step works on any repo.
+                  gh label create "$LABEL" \
+                    --color "0E8A16" \
+                    --description "Automated update to a new AWS Emulator version" \
+                    --force
+
+                  git config user.name "github-actions[bot]"
+                  git config user.email "41898273+github-actions[bot]@users.noreply.github.com"
+
+                  git switch -c "$BRANCH"
+                  git add docker/Dockerfile
+                  git commit -m "Update AWS Emulator to ${NEW_VERSION}"
+                  git push origin "$BRANCH"
+
+                  BODY="AWS published AWS Emulator **${NEW_VERSION}**.
+
+                  This pull request updates \`VERSION\` and \`RELEASE\` in \`docker/Dockerfile\`. The **Build, test and publish** workflow builds and smoke-tests it on AMD64 and ARM64.
+
+                  - Release notes and fidelity scores: https://github.com/aws/aws-emulator/releases
+                  - Published versions: https://downloads.aws.com/aws-emulator/packages/aws-emulator/LTS/versions.json
+
+                  Merging publishes \`${NEW_VERSION}\` and moves \`latest\` to it."
+
+                  gh pr create --base main --head "$BRANCH" \
+                    --title "Update AWS Emulator to ${NEW_VERSION}" \
+                    --body "$BODY" \
+                    --label "$LABEL" \
+                    --reviewer "$MAINTAINER" \
+                    --assignee "$MAINTAINER"
+
+                  # Pull requests opened with the workflow token don't trigger other workflows,
+                  # but "Run workflow" does, so start the build on the new branch explicitly.
+                  gh workflow run build.yml --ref "$BRANCH"
