@@ -7,13 +7,6 @@ No network or Docker needed: fake versions.json files and Dockerfiles
 are written to a temporary folder for each test.
 """
 
-from check_version import (  # pyright: ignore[reportMissingImports]
-    fetch_lts_versions,
-    newest_version,
-    parse_version,
-    read_dockerfile_version,
-    update_docker_version,
-)
 import json
 import sys
 import tempfile
@@ -23,6 +16,13 @@ from pathlib import Path
 # Make scripts/ importable, so the tests can use our functions.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
+from check_version import (  # pyright: ignore[reportMissingImports]
+    fetch_lts_versions,
+    newest_version,
+    parse_version,
+    read_dockerfile_version,
+    update_docker_version,
+)
 
 # A small Dockerfile shaped like the real one, used by the Dockerfile tests.
 SAMPLE_DOCKERFILE = """\
@@ -76,8 +76,7 @@ class TestParseVersion(unittest.TestCase):
 class TestNewestVersion(unittest.TestCase):
     def test_numeric_not_text_comparison(self):
         # The trap: as text, "1.0.99.1" > "1.0.322.1".
-        self.assertEqual(newest_version(
-            ["1.0.99.1", "1.0.322.1"]), "1.0.322.1")
+        self.assertEqual(newest_version(["1.0.99.1", "1.0.322.1"]), "1.0.322.1")
 
     def test_unsorted_list(self):
         self.assertEqual(
@@ -133,8 +132,7 @@ class TestReadDockerfileVersion(TempDirTestCase):
         self.assertEqual(read_dockerfile_version(path), "1.0.322.1")
 
     def test_missing_release_fails(self):
-        path = self.write_dockerfile(
-            SAMPLE_DOCKERFILE.replace("ARG RELEASE=1\n", ""))
+        path = self.write_dockerfile(SAMPLE_DOCKERFILE.replace("ARG RELEASE=1\n", ""))
         with self.assertRaises(ValueError):
             read_dockerfile_version(path)
 
@@ -168,8 +166,7 @@ class TestUpdateDockerVersion(TempDirTestCase):
         self.assertEqual(len(after), len(before))
 
         changed = [(b, a) for b, a in zip(before, after) if b != a]
-        self.assertEqual(
-            changed, [("ARG VERSION=1.0.322", "ARG VERSION=1.0.336")])
+        self.assertEqual(changed, [("ARG VERSION=1.0.322", "ARG VERSION=1.0.336")])
 
     def test_same_version_changes_nothing(self):
         # Idempotence: running the update twice gives the same result as once.
